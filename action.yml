@@ -1,0 +1,223 @@
+# runners.io checkout (RUN-1729): actions/checkout, served from a git mirror on
+# the repository's sticky disk when there is one.
+#
+#     - uses: runners-io/checkout@v1
+#
+# is a drop-in for `actions/checkout`. On a runners.io job that has a sticky disk
+# it keeps a bare mirror of the repository on that disk and checks out from it,
+# fetching only what the repository gained since the last job: a full-history
+# checkout that took tens of seconds takes a few. On any job that cannot use the
+# mirror (no sticky disk, a fork, another runner provider, an input the mirror
+# path does not reproduce, a mirror that is damaged or too big) it runs the
+# upstream actions/checkout, unchanged and with every input, and says why in one
+# line. So a workflow can carry it everywhere, and a mirror problem costs speed,
+# never the checkout.
+#
+# WHAT IT KEEPS, AND WHO CAN READ IT. A bare mirror of THIS repository (objects
+# and refs) at $GHWARP_STICKY_DISK/.runners-io/checkout-mirror/<repository id>.git.
+# The sticky disk is one per repository, so no other repository or organisation
+# can reach it; only a successful push, schedule or dispatch build of the default
+# branch keeps changes to it (docs/caching/sticky-disk-protection); it is metered
+# as sticky-disk storage like anything else on the disk, at the same rate and
+# under the same cap, and is deleted with the disk after seven idle days. The
+# token is never written into it (checkout.sh has the argument).
+#
+# WHERE IT LIVES. The source is a directory in runners.io's private monorepo, and
+# an action in a private repository can be used only from inside it, so customers
+# use a PUBLIC copy: these three files at the root of the repository on the line
+# below, tagged v1.x.y, with v1 moved to the newest (RUN-617's precedent, for
+# setup-docker-builder). The copy is byte-identical to the source, and the
+# monorepo's verifier-self-tests.yml fails when it is not, so a change lands in
+# the monorepo first and is then published as a new v1.x.y. The monorepo also
+# binds this line, by test, to the docs page customers paste it from: a `uses:`
+# that does not resolve fails a customer's job before any of its steps run.
+#
+# Published as: runners-io/checkout
+#
+# Files: checkout.sh (what runs), self-test.sh (checkout.sh against real git and
+# a local origin, no network).
+name: runners.io checkout
+description: >-
+  Check out your repository, from a git mirror on the repository's sticky disk
+  when there is one. Everywhere else it is actions/checkout.
+author: runners.io
+
+# Every input of actions/checkout v7.0.1, with its default, so this is a drop-in;
+# then the two Blacksmith users already pass. `dissociate` and `verbose` mean
+# something only on the mirror path.
+inputs:
+  repository:
+    description: 'Repository name with owner. For example, actions/checkout'
+    default: ${{ github.repository }}
+  ref:
+    description: >-
+      The branch, tag or SHA to checkout. When checking out the repository that
+      triggered a workflow, this defaults to the reference or SHA for that
+      event. Otherwise, uses the default branch.
+    required: false
+    default: ''
+  token:
+    description: >-
+      Personal access token (PAT) used to fetch the repository. The PAT is
+      configured with the local git config, which enables your scripts to run
+      authenticated git commands. The post-job step removes the PAT.
+    default: ${{ github.token }}
+  ssh-key:
+    description: >-
+      SSH key used to fetch the repository. A checkout with an SSH key is always
+      done by actions/checkout, never from the mirror.
+    required: false
+    default: ''
+  ssh-known-hosts:
+    description: Known hosts in addition to the user and global host key database.
+    required: false
+    default: ''
+  ssh-strict:
+    description: Whether to perform strict host key checking.
+    default: 'true'
+  ssh-user:
+    description: The user to use when connecting to the remote SSH host. By default 'git' is used.
+    default: git
+  persist-credentials:
+    description: Whether to configure the token or SSH key with the local git config.
+    default: 'true'
+  path:
+    description: Relative path under $GITHUB_WORKSPACE to place the repository.
+    required: false
+    default: ''
+  clean:
+    description: >-
+      Whether to execute `git clean -ffdx && git reset --hard HEAD` before
+      fetching. The mirror path only runs in an empty directory, so it has
+      nothing to clean.
+    default: 'true'
+  filter:
+    description: >-
+      Partially clone against a given filter. A checkout with a filter is always
+      done by actions/checkout, never from the mirror.
+    required: false
+    default: ''
+  sparse-checkout:
+    description: >-
+      Do a sparse checkout on given patterns, one per line. A sparse checkout is
+      always done by actions/checkout, never from the mirror.
+    required: false
+    default: ''
+  sparse-checkout-cone-mode:
+    description: Specifies whether to use cone-mode when doing a sparse checkout.
+    default: 'true'
+  fetch-depth:
+    description: >-
+      Number of commits to fetch. 0 indicates all history for all branches and
+      tags. Only 0 and 1 are served from the mirror.
+    default: '1'
+  fetch-tags:
+    description: Whether to fetch tags, even if fetch-depth > 0.
+    default: 'false'
+  show-progress:
+    description: Whether to show progress status output when fetching.
+    default: 'true'
+  lfs:
+    description: >-
+      Whether to download Git-LFS files. A checkout with LFS is always done by
+      actions/checkout, never from the mirror.
+    default: 'false'
+  submodules:
+    description: >-
+      Whether to checkout submodules: `true` to checkout submodules or
+      `recursive` to recursively checkout submodules. A checkout with submodules
+      is always done by actions/checkout, never from the mirror.
+    default: 'false'
+  set-safe-directory:
+    description: Add repository path as safe.directory for Git global config.
+    default: 'true'
+  github-server-url:
+    description: The base URL for the GitHub instance that you are trying to clone from.
+    required: false
+    default: ''
+  allow-unsafe-pr-checkout:
+    description: >-
+      Required by actions/checkout to check out fork pull request code from a
+      workflow triggered by `pull_request_target` or `workflow_run`. Those two
+      events are always checked out by actions/checkout, never from the mirror,
+      so its guard applies unchanged.
+    default: 'false'
+  dissociate:
+    description: >-
+      'true': the workspace's repository does not borrow the mirror's objects (it
+      gets its own copy, as `git clone --dissociate` does), so it is complete
+      without the sticky disk. Slower, and the default is 'false'. Has no effect
+      when the checkout is done by actions/checkout, which never borrows.
+    default: 'false'
+  verbose:
+    description: >-
+      'true': print what the mirror path is doing, with timings, and git's own
+      trace. The token is never part of it.
+    default: 'false'
+
+outputs:
+  ref:
+    description: The branch, tag or SHA that was checked out.
+    value: ${{ steps.mirror.outputs.fast == 'true' && steps.mirror.outputs.ref || steps.upstream.outputs.ref }}
+  commit:
+    description: The commit SHA that was checked out.
+    value: ${{ steps.mirror.outputs.fast == 'true' && steps.mirror.outputs.commit || steps.upstream.outputs.commit }}
+  mirror:
+    description: "'true' when the checkout was served from the sticky disk's mirror, 'false' when actions/checkout did it."
+    value: ${{ steps.mirror.outputs.fast == 'true' && 'true' || 'false' }}
+
+runs:
+  using: composite
+  steps:
+    - id: mirror
+      shell: bash
+      env:
+        GHWARP_STICKY_DISK: ${{ env.GHWARP_STICKY_DISK }}
+        REPOSITORY_ID: ${{ github.repository_id }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_REF: ${{ inputs.ref }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_SSH_KEY: ${{ inputs.ssh-key }}
+        INPUT_PERSIST_CREDENTIALS: ${{ inputs.persist-credentials }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_FILTER: ${{ inputs.filter }}
+        INPUT_SPARSE_CHECKOUT: ${{ inputs.sparse-checkout }}
+        INPUT_FETCH_DEPTH: ${{ inputs.fetch-depth }}
+        INPUT_FETCH_TAGS: ${{ inputs.fetch-tags }}
+        INPUT_LFS: ${{ inputs.lfs }}
+        INPUT_SUBMODULES: ${{ inputs.submodules }}
+        INPUT_SET_SAFE_DIRECTORY: ${{ inputs.set-safe-directory }}
+        INPUT_GITHUB_SERVER_URL: ${{ inputs.github-server-url }}
+        INPUT_DISSOCIATE: ${{ inputs.dissociate }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
+      run: '"${GITHUB_ACTION_PATH}/checkout.sh"'
+
+    # The upstream action, pinned by SHA (v7.0.1), with every input forwarded
+    # explicitly. It runs whenever the step above answered fast=false, and its
+    # own post-job step then removes the token as it always does.
+    - id: upstream
+      if: steps.mirror.outputs.fast != 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        token: ${{ inputs.token }}
+        ssh-key: ${{ inputs.ssh-key }}
+        ssh-known-hosts: ${{ inputs.ssh-known-hosts }}
+        ssh-strict: ${{ inputs.ssh-strict }}
+        ssh-user: ${{ inputs.ssh-user }}
+        persist-credentials: ${{ inputs.persist-credentials }}
+        path: ${{ inputs.path }}
+        clean: ${{ inputs.clean }}
+        filter: ${{ inputs.filter }}
+        sparse-checkout: ${{ inputs.sparse-checkout }}
+        sparse-checkout-cone-mode: ${{ inputs.sparse-checkout-cone-mode }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        fetch-tags: ${{ inputs.fetch-tags }}
+        show-progress: ${{ inputs.show-progress }}
+        lfs: ${{ inputs.lfs }}
+        submodules: ${{ inputs.submodules }}
+        set-safe-directory: ${{ inputs.set-safe-directory }}
+        github-server-url: ${{ inputs.github-server-url }}
+        allow-unsafe-pr-checkout: ${{ inputs.allow-unsafe-pr-checkout }}
