@@ -14,7 +14,7 @@
 # never the checkout.
 #
 # WHAT IT KEEPS, AND WHO CAN READ IT. A bare mirror of THIS repository (objects
-# and refs) at $GHWARP_STICKY_DISK/.runners-io/checkout-mirror/<repository id>.git.
+# and refs) at $RUNNERSIO_STICKY_DISK/.runners-io/checkout-mirror/<repository id>.git.
 # The sticky disk is one per repository, so no other repository or organisation
 # can reach it; only a successful push, schedule or dispatch build of the default
 # branch keeps changes to it (docs/caching/sticky-disk-protection); it is metered
@@ -172,7 +172,8 @@ runs:
     - id: mirror
       shell: bash
       env:
-        GHWARP_STICKY_DISK: ${{ env.GHWARP_STICKY_DISK }}
+        RUNNERSIO_STICKY_DISK: ${{ env.RUNNERSIO_STICKY_DISK }}
+        GHWARP_STICKY_DISK: ${{ env.GHWARP_STICKY_DISK }} # RUN-4188: the old name, read until 2026-12-18
         REPOSITORY_ID: ${{ github.repository_id }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         INPUT_REPOSITORY: ${{ inputs.repository }}

@@ -107,7 +107,7 @@ run_co() {
     "GITHUB_OUTPUT=$d/out" "GITHUB_WORKSPACE=$d/ws" "RUNNER_TEMP=$d/home"
     "GITHUB_REPOSITORY=org/repo" "REPOSITORY_ID=1001" "GITHUB_SERVER_URL=file://$server" "GITHUB_API_URL="
     "GITHUB_REF=refs/heads/main" "GITHUB_SHA=$main_sha" "GITHUB_EVENT_NAME=push" "DEFAULT_BRANCH=main"
-    "GHWARP_STICKY_DISK=$d/sticky"
+    "RUNNERSIO_STICKY_DISK=$d/sticky"
     "INPUT_TOKEN=$token" "INPUT_FETCH_DEPTH=1" "INPUT_PERSIST_CREDENTIALS=true" "INPUT_SET_SAFE_DIRECTORY=true"
   )
   local kv n j found
@@ -115,7 +115,7 @@ run_co() {
     n="${kv%%=*}"; found=""
     j=0
     while [ "$j" -lt "${#vars[@]}" ]; do
-      if [ "${vars[$j]%%=*}" = "$n" ]; then vars[$j]="$kv"; found=1; fi
+      if [ "${vars[$j]%%=*}" = "$n" ]; then vars[j]="$kv"; found=1; fi
       j=$((j + 1))
     done
     [ -n "$found" ] || vars+=("$kv")
@@ -153,20 +153,28 @@ export NOGIT_LOG="$work/nogit.log"
 
 echo "== (a) no sticky disk: a plain checkout, success, git never run"
 : >"$NOGIT_LOG"
-run_co a "PATH=$work/nogit:/usr/bin:/bin" "GHWARP_STICKY_DISK=__unset__"
+run_co a "PATH=$work/nogit:/usr/bin:/bin" "RUNNERSIO_STICKY_DISK=__unset__"
 eq "unset: exits 0" "$last_rc" 0
 eq "unset: fast=false" "$(out_of a fast)" false
 expect "unset: says why in one line" said_in a "no sticky disk"
 expect "unset: git was never run" test ! -s "$NOGIT_LOG"
-run_co a2 "PATH=$work/nogit:/usr/bin:/bin" "GHWARP_STICKY_DISK="
+run_co a2 "PATH=$work/nogit:/usr/bin:/bin" "RUNNERSIO_STICKY_DISK="
 eq "empty: fast=false" "$(out_of a2 fast)" false
-run_co a3 "PATH=$work/nogit:/usr/bin:/bin" "GHWARP_STICKY_DISK=$work/does-not-exist"
+run_co a3 "PATH=$work/nogit:/usr/bin:/bin" "RUNNERSIO_STICKY_DISK=$work/does-not-exist"
 eq "a path that is not a directory: fast=false, exit 0" "$(out_of a3 fast)/$last_rc" "false/0"
 expect "a path that is not a directory: git never run" test ! -s "$NOGIT_LOG"
 run_co a4 "PATH=$work/nogit:/usr/bin:/bin" "REPOSITORY_ID=__unset__"
 eq "no repository id to key the mirror on: fast=false" "$(out_of a4 fast)" false
 expect "no repository id: nothing created on the disk" test ! -e "$work/a4/sticky/.runners-io"
 expect "no repository id: git never run" test ! -s "$NOGIT_LOG"
+
+echo "== the old variable name still works until 2026-12-18 (RUN-4188)"
+# An image built before the rename exports only GHWARP_STICKY_DISK; one built after exports both until that date.
+run_co alias "RUNNERSIO_STICKY_DISK=__unset__" "GHWARP_STICKY_DISK=$work/alias/sticky"
+eq "only the old name set: the mirror is built and used" "$(out_of alias fast)/$last_rc" "true/0"
+expect "only the old name set: the mirror is on the disk the old name points at" test -d "$(mirror_of alias)"
+run_co both "GHWARP_STICKY_DISK=$work/does-not-exist"
+eq "both set and different: the new name wins" "$(out_of both fast)/$last_rc" "true/0"
 
 echo "== the happy path, and what each input makes ineligible"
 run_co h1

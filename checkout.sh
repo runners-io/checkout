@@ -17,7 +17,7 @@
 #
 # WHAT THE MIRROR IS
 #
-#   $GHWARP_STICKY_DISK/.runners-io/checkout-mirror/<repository id>.git
+#   $RUNNERSIO_STICKY_DISK/.runners-io/checkout-mirror/<repository id>.git
 #
 # a bare mirror of THIS job's own repository: git objects and refs, nothing else.
 # Keyed by the permanent repository id (RUN-462), never the name, which can be
@@ -61,7 +61,9 @@ q=(--quiet)
 lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # --- is this job eligible at all? ---------------------------------------------
-sticky="${GHWARP_STICKY_DISK:-}"
+# RUN-4188: RUNNERSIO_STICKY_DISK is the name a runners.io runner exports; GHWARP_STICKY_DISK is its old name,
+# exported beside it until 2026-12-18 and the only one an image built before that change has. The new name wins.
+sticky="${RUNNERSIO_STICKY_DISK:-${GHWARP_STICKY_DISK:-}}"
 [ -n "$sticky" ] || skip "no sticky disk on this job"
 case "$sticky" in /*) ;; *) skip "the sticky disk path is not absolute" ;; esac
 { [ -d "$sticky" ] && [ -w "$sticky" ]; } || skip "the sticky disk is not a writable directory"
