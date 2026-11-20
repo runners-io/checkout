@@ -109,7 +109,8 @@ inputs:
   fetch-depth:
     description: >-
       Number of commits to fetch. 0 indicates all history for all branches and
-      tags. Only 0 and 1 are served from the mirror.
+      tags. 0 and 1 are served from the mirror; any other depth is served from
+      it only with `mirror-any-depth: true`, and otherwise by actions/checkout.
     default: '1'
   fetch-tags:
     description: Whether to fetch tags, even if fetch-depth > 0.
@@ -154,6 +155,15 @@ inputs:
       'true': print what the mirror path is doing, with timings, and git's own
       trace. The token is never part of it.
     default: 'false'
+  mirror-any-depth:
+    description: >-
+      'true': serve a fetch-depth other than 0 or 1 (2 for a scope diff against
+      HEAD^, say) from the mirror too. The workspace then has the whole history,
+      not the depth asked for, and is not shallow, so `git fetch --unshallow`
+      fails in it. 'false', the default, leaves any such depth to
+      actions/checkout. Any other value sends the whole checkout to
+      actions/checkout, and the log names the value.
+    default: 'false'
 
 outputs:
   ref:
@@ -192,6 +202,7 @@ runs:
         INPUT_GITHUB_SERVER_URL: ${{ inputs.github-server-url }}
         INPUT_DISSOCIATE: ${{ inputs.dissociate }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
+        INPUT_MIRROR_ANY_DEPTH: ${{ inputs.mirror-any-depth }}
       run: '"${GITHUB_ACTION_PATH}/checkout.sh"'
 
     # The upstream action, pinned by SHA (v7.0.1), with every input forwarded

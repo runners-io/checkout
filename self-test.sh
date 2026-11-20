@@ -74,6 +74,18 @@ printf 'merge only\n' >"$seed/merge-only.txt"; g add -A; g commit -q -m "merge o
 pr_only_sha="$(g rev-parse HEAD)"
 g push -q "file://$origin" "HEAD:refs/pull/8/merge"
 g checkout -q main
+# A pull request's MERGE commit as GitHub makes it (RUN-4949): two parents, the
+# base (main) first and the PR's head second, and neither the merge nor the head
+# on any branch: only refs/pull/9/{head,merge} reach them. A diff-scope step at
+# fetch-depth 2 reads `git diff HEAD^ HEAD`, the PR's whole change.
+g checkout -q --detach main
+printf 'pr nine\n' >"$seed/pr-nine.txt"; g add -A; g commit -q -m "pr nine"
+pr9_head_sha="$(g rev-parse HEAD)"
+g checkout -q --detach main
+g merge -q --no-ff --no-edit -m "Merge pr nine into main" "$pr9_head_sha"
+pr9_merge_sha="$(g rev-parse HEAD)"
+g push -q "file://$origin" "$pr9_head_sha:refs/pull/9/head" "HEAD:refs/pull/9/merge"
+g checkout -q main
 
 # A second repository with a different id and different history: B must never
 # see A's objects.
@@ -197,6 +209,9 @@ for case_ in \
   "sparse-checkout|INPUT_SPARSE_CHECKOUT=src" \
   "filter|INPUT_FILTER=blob:none" \
   "fetch-depth 5|INPUT_FETCH_DEPTH=5" \
+  "fetch-depth that is not a number|INPUT_FETCH_DEPTH=abc" \
+  "a negative fetch-depth|INPUT_FETCH_DEPTH=-1" \
+  "a fetch-depth with a leading zero|INPUT_FETCH_DEPTH=02" \
   "github-server-url|INPUT_GITHUB_SERVER_URL=https://ghe.example.com" \
   "pull_request_target|GITHUB_EVENT_NAME=pull_request_target" \
   "workflow_run|GITHUB_EVENT_NAME=workflow_run" \
@@ -408,6 +423,96 @@ run_co r4 "INPUT_REF=no-such-branch"
 eq "ref that does not exist: plain checkout (actions/checkout gives the real error)" "$(out_of r4 fast)" false
 run_co r5 "INPUT_FETCH_TAGS=true"
 expect "fetch-tags at depth 1: the tags are there" "$real_git" -C "$work/r5/ws" rev-parse --verify -q refs/tags/v1.0
+
+echo "== by default, fetch-depth N > 1 goes to actions/checkout, exactly as in v1.1.0 (RUN-4949)"
+# A step written for a shallow clone (`git fetch --unshallow` after depth 50) would
+# fail on the mirror's complete history, so only an explicit opt-in changes this.
+for case_ in "unset|INPUT_MIRROR_ANY_DEPTH=__unset__" "false|INPUT_MIRROR_ANY_DEPTH=false" "empty|INPUT_MIRROR_ANY_DEPTH="; do
+  name="${case_%%|*}"; var="${case_#*|}"
+  for d in 2 50; do
+    run_co d-default "INPUT_FETCH_DEPTH=$d" "$var"
+    eq "mirror-any-depth $name, depth $d: plain checkout, exit 0" "$(out_of d-default fast)/$last_rc" "false/0"
+    expect "mirror-any-depth $name, depth $d: v1.1.0's reason, word for word" said_in d-default "fetch-depth is $d, and only 0 or 1 is served from the mirror; using a plain checkout."
+    expect "mirror-any-depth $name, depth $d: the mirror is not even created" test ! -e "$work/d-default/sticky/.runners-io"
+    expect "mirror-any-depth $name, depth $d: the workspace is left empty for actions/checkout" test -z "$(ls -A "$work/d-default/ws")"
+  done
+done
+run_co d-default1 "INPUT_MIRROR_ANY_DEPTH=false"
+eq "mirror-any-depth false, depth 1: still served, as in v1.1.0" "$(out_of d-default1 fast)/$last_rc" "true/0"
+run_co d-default0 "INPUT_MIRROR_ANY_DEPTH=false" "INPUT_FETCH_DEPTH=0"
+eq "mirror-any-depth false, depth 0: still served, as in v1.1.0" "$(out_of d-default0 fast)/$last_rc" "true/0"
+
+echo "== a mirror-any-depth that is neither true nor false: plain checkout, the value named, never an error"
+for bad in yes 1 on 'true ' "\$(touch PWNED)"; do
+  for d in 1 2; do
+    run_co d-bad "INPUT_FETCH_DEPTH=$d" "INPUT_MIRROR_ANY_DEPTH=$bad"
+    eq "mirror-any-depth '$bad', depth $d: plain checkout, exit 0" "$(out_of d-bad fast)/$last_rc" "false/0"
+    expect "mirror-any-depth '$bad', depth $d: the log names the value" said_in d-bad "mirror-any-depth is '$bad', which is neither true nor false"
+    expect "mirror-any-depth '$bad', depth $d: the mirror is not even created" test ! -e "$work/d-bad/sticky/.runners-io"
+    expect "mirror-any-depth '$bad', depth $d: nothing ran" test ! -e "$work/d-bad/PWNED"
+  done
+done
+
+echo "== with mirror-any-depth: true, fetch-depth N > 1 is served from the mirror (RUN-4949)"
+# A diff-scope step asks for depth 2 to read HEAD^. The mirror serves the whole
+# history, a superset of depth N, so HEAD^ resolves and nothing is shallow.
+run_co n2 "INPUT_FETCH_DEPTH=2" "INPUT_MIRROR_ANY_DEPTH=true"
+eq "depth 2 on a default-branch push: served, exit 0" "$(out_of n2 fast)/$last_rc" "true/0"
+eq "depth 2: at the commit" "$(gws n2 "" rev-parse HEAD)" "$main_sha"
+eq "depth 2: HEAD^ resolves to the commit's parent" "$(gws n2 "" rev-parse --verify -q 'HEAD^')" "$(g rev-parse "$main_sha^")"
+expect "depth 2: a scope diff against HEAD^ runs" gws n2 "" diff --quiet --exit-code 'HEAD^' HEAD -- no-such-path
+eq "depth 2: the workspace is not shallow" "$(gws n2 "" rev-parse --is-shallow-repository)" false
+eq "depth 2: on the branch, as at depth 1" "$(gws n2 "" symbolic-ref --short HEAD)" main
+expect "depth 2: no other branch is written, as at depth 1" bash -c '! "$1" -C "$2" rev-parse --verify -q refs/remotes/origin/feature' _ "$real_git" "$work/n2/ws"
+expect "depth 2: and no tag without fetch-tags" bash -c '! "$1" -C "$2" rev-parse --verify -q refs/tags/v1.0' _ "$real_git" "$work/n2/ws"
+run_co n50 "INPUT_FETCH_DEPTH=50" "INPUT_MIRROR_ANY_DEPTH=true"
+eq "depth 50: served" "$(out_of n50 fast)" true
+eq "depth 50: HEAD~49 resolves" "$(gws n50 "" rev-parse --verify -q 'HEAD~49')" "$(g rev-parse "$main_sha~49")"
+# WHY IT IS OPT-IN, measured: the step the reviewer named fails on the served workspace.
+expect "depth 50, served: \`git fetch --unshallow\` fails on the complete repository, which is why it is opt-in" \
+  bash -c '"$1" -C "$2" rev-parse --git-dir >/dev/null 2>&1 && ! "$1" -C "$2" fetch -q --unshallow origin 2>/dev/null' _ "$real_git" "$work/n50/ws"
+run_co n1t "INPUT_MIRROR_ANY_DEPTH=TRUE"
+eq "mirror-any-depth TRUE, depth 1: served as before" "$(out_of n1t fast)/$last_rc" "true/0"
+run_co n0t "INPUT_MIRROR_ANY_DEPTH=True" "INPUT_FETCH_DEPTH=0"
+eq "mirror-any-depth True, depth 0: the whole history and every branch, as before" "$(out_of n0t fast)/$(gws n0t "" rev-parse --verify -q refs/remotes/origin/feature)" "true/$feature_sha"
+for case_ in \
+  "fetch-depth that is not a number|INPUT_FETCH_DEPTH=abc" \
+  "a negative fetch-depth|INPUT_FETCH_DEPTH=-1" \
+  "a fetch-depth with a leading zero|INPUT_FETCH_DEPTH=02" ; do
+  name="${case_%%|*}"; var="${case_#*|}"
+  run_co n-nan "INPUT_MIRROR_ANY_DEPTH=true" "$var"
+  eq "mirror-any-depth true with $name: plain checkout, exit 0" "$(out_of n-nan fast)/$last_rc" "false/0"
+  expect "mirror-any-depth true with $name: the mirror is not even created" test ! -e "$work/n-nan/sticky/.runners-io"
+done
+
+# THE PULL REQUEST CASE: a real two-parent merge commit on no branch, its PR head
+# on no branch either, served from a warm mirror built by the default branch.
+mkdir -p "$work/n2-pr"
+cp -R "$work/h1/sticky" "$work/n2-pr/sticky"
+expect "CONTROL: the warm mirror has neither the merge commit nor the PR head before the run" \
+  bash -c '! "$1" -C "$2" cat-file -e "$3" 2>/dev/null && ! "$1" -C "$2" cat-file -e "$4" 2>/dev/null' \
+  _ "$real_git" "$(mirror_of n2-pr)" "$pr9_merge_sha" "$pr9_head_sha"
+run_co n2-pr "INPUT_FETCH_DEPTH=2" "INPUT_MIRROR_ANY_DEPTH=true" "GITHUB_EVENT_NAME=pull_request" "GITHUB_REF=refs/pull/9/merge" "GITHUB_SHA=$pr9_merge_sha"
+eq "depth 2 on a pull request's merge commit: served, exit 0" "$(out_of n2-pr fast)/$last_rc" "true/0"
+eq "depth 2 PR: detached at the merge commit" "$(gws n2-pr "" rev-parse HEAD)" "$pr9_merge_sha"
+eq "depth 2 PR: HEAD^ is the base" "$(gws n2-pr "" rev-parse --verify -q 'HEAD^')" "$main_sha"
+eq "depth 2 PR: HEAD^2 is the PR's head" "$(gws n2-pr "" rev-parse --verify -q 'HEAD^2')" "$pr9_head_sha"
+eq "depth 2 PR: the scope diff HEAD^..HEAD is the PR's change, and only it" "$(gws n2-pr "" diff --name-only 'HEAD^' HEAD)" "pr-nine.txt"
+expect "depth 2 PR: the workspace is connected (nothing borrowed is missing)" gws n2-pr "" fsck --connectivity-only
+expect "depth 2 PR: the merge ref is written as actions/checkout writes it" gws n2-pr "" rev-parse --verify -q refs/remotes/pull/9/merge
+
+# Whatever the depth, what the mirror cannot reproduce still goes to actions/checkout.
+for case_ in \
+  "sparse-checkout|INPUT_SPARSE_CHECKOUT=src" \
+  "filter|INPUT_FILTER=blob:none" \
+  "submodules|INPUT_SUBMODULES=recursive" \
+  "lfs|INPUT_LFS=true" ; do
+  name="${case_%%|*}"; var="${case_#*|}"
+  run_co n2-inel "INPUT_FETCH_DEPTH=2" "INPUT_MIRROR_ANY_DEPTH=true" "$var"
+  eq "depth 2 with $name: plain checkout, exit 0" "$(out_of n2-inel fast)/$last_rc" "false/0"
+  expect "depth 2 with $name: the mirror is not even created" test ! -e "$work/n2-inel/sticky/.runners-io"
+  expect "depth 2 with $name: the workspace is left empty for actions/checkout" test -z "$(ls -A "$work/n2-inel/ws")"
+done
 
 echo "== an existing checkout in the target is not ours to touch"
 mkdir -p "$work/x/ws/.git"

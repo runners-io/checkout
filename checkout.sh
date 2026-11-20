@@ -86,7 +86,32 @@ case "${INPUT_LFS:-false}" in false|FALSE|False|'') ;; *) skip "Git LFS is reque
 case "${INPUT_SPARSE_CHECKOUT:-}" in ''|null) ;; *) skip "a sparse checkout is requested" ;; esac
 case "${INPUT_FILTER:-}" in ''|null) ;; *) skip "a partial-clone filter is requested" ;; esac
 depth="${INPUT_FETCH_DEPTH:-1}"
-case "$depth" in 0|1) ;; *) skip "fetch-depth is $depth, and only 0 or 1 is served from the mirror" ;; esac
+# fetch-depth above 1 is served only when the workflow opts in (RUN-4949). The
+# workspace borrows the mirror's objects through alternates, so it is never
+# shallow: depth 1 already has the whole history, and an opted-in depth N has it
+# too, a superset of the N commits asked for, so `git diff HEAD^ HEAD` (the
+# diff-scope steps that ask for depth 2) and a pull request's merge-commit parents
+# resolve. Writing .git/shallow to cut it to exactly N would cost a walk of the
+# history and buy nothing a job can use. It is OPT-IN because a step written for
+# a shallow clone can break on a complete one: `git fetch --unshallow` after
+# `fetch-depth: 50` fails with "--unshallow on a complete repository", where the
+# plain checkout it gets without the input works. So the default is v1.1.0's rule,
+# unchanged, and a value that is neither true nor false sends the job to the
+# plain checkout rather than guessing.
+case "${INPUT_MIRROR_ANY_DEPTH:-false}" in
+  true|TRUE|True) any_depth=true ;;
+  false|FALSE|False) any_depth=false ;;
+  *) skip "mirror-any-depth is '${INPUT_MIRROR_ANY_DEPTH}', which is neither true nor false" ;;
+esac
+if [ "$any_depth" = true ]; then
+  # Anything that is not a plain count goes to actions/checkout, which gives the real error.
+  case "$depth" in
+    0) ;;
+    ''|*[!0-9]*|0*) skip "fetch-depth is '$depth', not a number of commits the mirror can serve" ;;
+  esac
+else
+  case "$depth" in 0|1) ;; *) skip "fetch-depth is $depth, and only 0 or 1 is served from the mirror" ;; esac
+fi
 server="${GITHUB_SERVER_URL:-https://github.com}"
 server="${server%/}"
 input_server="${INPUT_GITHUB_SERVER_URL:-}"
@@ -287,7 +312,7 @@ build_workspace() {
   printf '%s\n' "$mirror/objects" >"$ws/.git/objects/info/alternates" || return 1
 
   # Refs the way a full-history fetch leaves them (depth 0), or just the one
-  # being checked out (depth 1), written straight from the mirror: the objects
+  # being checked out (any other depth), written straight from the mirror: the objects
   # are already visible through the alternates, so nothing is copied.
   if [ "$depth" = 0 ] || [ "${INPUT_FETCH_TAGS:-false}" = true ]; then
     mgit for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags |
